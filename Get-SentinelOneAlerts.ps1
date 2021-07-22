@@ -15,7 +15,7 @@ $MessageTitle = "New SentinelOne Alert"
 $TeamsMsgLimit = 5 # Max 5 alerts at once
 
 $headers = @{"Authorization" = "APIToken $APIkey"; "Content-Type" = "application/json"}
-$console = "" $ https://location.sentinelone.huh
+$console = "" # https://location.sentinelone.huh
 $query = "/web/api/v2.1/cloud-detection/alerts?reportedAt__gt=$LastX&limit=50"
 $URI = $console + $query
 
