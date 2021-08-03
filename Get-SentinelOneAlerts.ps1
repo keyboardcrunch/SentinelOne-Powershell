@@ -6,24 +6,20 @@ Includes link to Storyline, prevents repeat alerts, checks last 40 minutes of al
 
 Import-Module PSTeams
 
-$AppTitle = "Get-SentinelOneAlerts" # App name for error alerts
-$Expiration = "SecOps API Key: 05/14/2023" # API Expiration note for teams alert
-$APIkey = ""
-$LastX = $(Get-Date).AddMinutes(-40) | Get-Date -Format 'yyyy-MM-ddThh:mm:sZ' # Current time/date minus 40 minutes
-$TeamsID = "" # https://org.webhook.office.com/huh/huh/huh
-$MessageTitle = "New SentinelOne Alert"
-$TeamsMsgLimit = 5 # Max 5 alerts at once
-
+# SecOps API Key (view only) - Expires 12/14/2021
+$AppTitle = "Get-SentinelOneAlerts"
+$Expiration = "SecOps API Key: 12/14/2021"
+$APIkey = "MY_API_KEY_HERE" # CHANGE THIS
 $headers = @{"Authorization" = "APIToken $APIkey"; "Content-Type" = "application/json"}
-$console = "" # https://location.sentinelone.huh
-$query = "/web/api/v2.1/cloud-detection/alerts?reportedAt__gt=$LastX&limit=50"
-$URI = $console + $query
-
-$AlertDb = Join-Path $env:TEMP -ChildPath S1AlertIDs.dat
-If (-Not(Test-path $AlertDb)) { Add-Content -Path $AlertDb -Value "" -Force }
+$SiteURL = "https://console.sentinelone.net" # CHANGE THIS
 
 
-$request = Invoke-WebRequest -Headers $headers -Uri $URI
+$TeamsID = "https://organizationhere.webhook.office.com/webhookb2/234345/IncomingWebhook/asdf223f23"
+$MessageTitle = "New SentinelOne Alert"
+$MsgLimit = 3 # limits query for alerts
+
+
+$request = Invoke-WebRequest -Headers $headers -Uri "$SiteURL/web/api/v2.1/cloud-detection/alerts?limit=$MsgLimit"
 
 If ( $request.StatusCode -eq 401 ) {
     Send-TeamsMessage -Uri $TeamsID -MessageTitle $AppTitle -MessageText "The following SentinelOne API key has expired.`r`n$Expiration" -Color Amber
@@ -32,44 +28,42 @@ If ( $request.StatusCode -eq 401 ) {
 } Else {
     $data = $request.Content | ConvertFrom-Json | Select -ExpandProperty Data
     $Unresolved = $data | where-object { $_.alertInfo.IncidentStatus -eq "Unresolved" }
-    $c = 0
-    While ( $c -le $TeamsMsgLimit ) {
-        ForEach ($U in $Unresolved) {
-            If ( Select-String -Path $AlertDb -Pattern $U.alertInfo.alertId -SimpleMatch -Quiet ) {
-            } Else {
-                Add-Content -Path $AlertDb -Value $U.alertInfo.alertId
-                $c += 1
-                $reported = $U.alertInfo.reportedAt | Get-Date
-                $report = @"
-**Reported:**`t`t $reported
 
-**Resolved:**`t`t $($U.alertInfo.incidentStatus)
+    ForEach ($U in $Unresolved) {
+        $reported = $U.alertInfo.reportedAt | Get-Date
+        $RuleQuery = Invoke-WebRequest -Headers $headers -Uri "$SiteURL/web/api/v2.1/cloud-detection/rules?ids=$($U.ruleInfo.id)"
+        $RuleInfo = $RuleQuery.Content | ConvertFrom-Json | Select -ExpandProperty Data
+        $EncodedQuery = [System.Web.HttpUtility]::UrlEncode($RuleInfo.s1ql) # URLEncode query for link creation
+        $QueryURL = "$SiteURL/dv/hunting?queryString=$EncodedQuery"
 
-**Machine:**`t`t $($U.agentDetectionInfo.name)
+        New-AdaptiveCard -Uri $TeamsID {
+            New-AdaptiveTextBlock -Size ExtraLarge -Weight Bolder -Text $MessageTitle
+            New-AdaptiveContainer {
+                New-AdaptiveColumnSet {
+                    New-AdaptiveColumn {
+                        New-AdaptiveFactSet {
+                            New-AdaptiveFact -Title "Rule" -Value $($U.ruleInfo.name)
+                            New-AdaptiveFact -Title "Description" -Value $($U.ruleInfo.description)
 
-**OS:**`t`t`t`t $($U.agentDetectionInfo.osName)
+                            New-AdaptiveFact -Title "Reported" -Value $reported
+                            New-AdaptiveFact -Title "Resolved" -Value $($U.alertInfo.incidentStatus)
+                            New-AdaptiveFact -Title "Machine" -Value $($U.agentDetectionInfo.name)
+                            New-AdaptiveFact -Title "OS" -Value $($U.agentDetectionInfo.osName)
+                            New-AdaptiveFact -Title "Agent Version" -Value $($U.agentDetectionInfo.version)
+                            New-AdaptiveFact -Title "Severity" -Value $($U.ruleInfo.severity)
+                            New-AdaptiveFact -Title "Remediation" -Value $($U.ruleInfo.treatAsThreat)
+                            
+                            New-AdaptiveFact -Title "Process" -Value $($U.sourceProcessInfo.filePath)
+                            New-AdaptiveFact -Title "Commandline" -Value $($U.sourceProcessInfo.commandline)
+                            New-AdaptiveFact -Title "Username" -Value $($U.sourceProcessInfo.user)
+                        }
+                    } -Width Auto
+                }
+            } -Spacing None
 
-**Agent Ver:**`t`t $($U.agentDetectionInfo.version)
-
-**Rule:**`t`t`t $($U.ruleInfo.name)
-
-**Severity:**`t`t $($U.ruleInfo.severity)
-
-**Remediation:**`t $($U.ruleInfo.treatAsThreat)
-
-**Description:**`r`n $($U.ruleInfo.description)
-
-**CommandLine:**`t $($U.sourceProcessInfo.commandline)
-
-**UserName:**`t`t $($U.sourceProcessInfo.user)
-
-**Storyline:**`t`t $($U.sourceProcessInfo.storyline)
-
-"@
-                $SLButton = New-TeamsButton -Name "Open Storyline" -Link "$($console)/dv?queryString=SrcProcStorylineId%20%3D%20%22$($U.sourceProcessInfo.storyline)%22%20OR%20TgtProcStorylineId%20%3D%20%22$($U.sourceProcessInfo.storyline)%22&timeFrame=Last7Days&isRunQuery=true"
-                $SLSection = New-TeamsSection -Buttons $SLButton
-                Send-TeamsMessage -Uri $TeamsID -MessageTitle $MessageTitle -MessageText $report -Color Amber -Sections $SLSection
-            }
+        } -Action {
+            New-AdaptiveAction -Title 'Open Storyline' -Type Action.OpenUrl -ActionUrl "$SiteURL/dv?queryString=SrcProcStorylineId%20%3D%20%22$($U.sourceProcessInfo.storyline)%22%20OR%20TgtProcStorylineId%20%3D%20%22$($U.sourceProcessInfo.storyline)%22&timeFrame=Last7Days&isRunQuery=true"
+            New-AdaptiveAction -Title 'Run Rule' -Type Action.OpenUrl -ActionUrl "$QueryURL"
         }
     }
 }
